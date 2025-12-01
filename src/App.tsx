@@ -176,12 +176,26 @@ function buildFreeformPath(
   return d;
 }
 
+// compute a stable id for a PDF file from its bytes
+async function computeDocId(buffer: ArrayBuffer): Promise<string> {
+  const hash = await crypto.subtle.digest("SHA-256", buffer);
+  const bytes = new Uint8Array(hash);
+  return Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+
 // ------------------------- App -----------------------------------
 const App: React.FC = () => {
   const [pdfDoc, setPdfDoc] = useState<PDFDocumentProxy | null>(null);
   const [pageNum, setPageNum] = useState(1);
   const [scale, setScale] = useState(1.0);
   const [totalPages, setTotalPages] = useState<number | null>(null);
+
+  
+  const [currentDocId, setCurrentDocId] = useState<string | null>(null);
+  const [currentPdfName, setCurrentPdfName] = useState<string | null>(null);
 
   // canvas size in CSS pixels (for overlay SVG)
   const [canvasSize, setCanvasSize] = useState<{
@@ -305,6 +319,38 @@ const App: React.FC = () => {
       rootRef.current.focus();
     }
   }, []);
+
+  // 🔹 persist annotations for the current PDF into localStorage
+useEffect(() => {
+  if (!currentDocId) return;
+
+  try {
+    const raw = localStorage.getItem("mdr-docs");
+    const store: Record<
+      string,
+      {
+        pdfName?: string | null;
+        lines?: Line[];
+        areas?: AreaShape[];
+        textBoxes?: TextBox[];
+        updatedAt?: number;
+      }
+    > = raw ? JSON.parse(raw) : {};
+
+    store[currentDocId] = {
+      pdfName: currentPdfName,
+      lines,
+      areas,
+      textBoxes,
+      updatedAt: Date.now(),
+    };
+
+    localStorage.setItem("mdr-docs", JSON.stringify(store));
+  } catch (err) {
+    console.error("Failed to save annotations:", err);
+  }
+}, [currentDocId, currentPdfName, lines, areas, textBoxes]);
+
 
   
 
@@ -433,40 +479,80 @@ const App: React.FC = () => {
   }
 
   // ---- load file from <input type="file"> -------------------
-  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  // ---- load file from <input type="file"> -------------------
+function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+  const file = e.target.files?.[0];
+  if (!file) return;
 
-    const reader = new FileReader();
+  const reader = new FileReader();
 
-    reader.onload = async () => {
-      const buffer = new Uint8Array(reader.result as ArrayBuffer);
+  reader.onload = async () => {
+    const arrayBuffer = reader.result as ArrayBuffer;
+    const buffer = new Uint8Array(arrayBuffer);
 
-      const loadingTask = getDocument({
-        data: buffer,
-      } as DocumentInit);
+    // 🔹 compute a stable id for this PDF & remember its name
+    const docId = await computeDocId(arrayBuffer);
+    setCurrentDocId(docId);
+    setCurrentPdfName(file.name);
 
-      try {
-        const doc = await loadingTask.promise;
-        setPdfDoc(doc);
-        setTotalPages(doc.numPages);
-        setPageNum(1);
-        setScale(1.0);
+    // 🔹 try to restore saved annotations for this doc from localStorage
+    try {
+      const raw = localStorage.getItem("mdr-docs");
+      if (raw) {
+        const store = JSON.parse(raw) as Record<
+          string,
+          {
+            pdfName?: string | null;
+            lines?: Line[];
+            areas?: AreaShape[];
+            textBoxes?: TextBox[];
+            updatedAt?: number;
+          }
+        >;
 
-        // Clear annotations when a new PDF is loaded
+        const saved = store[docId];
+        if (saved) {
+          setLines(saved.lines ?? []);
+          setAreas(saved.areas ?? []);
+          setTextBoxes(saved.textBoxes ?? []);
+        } else {
+          setLines([]);
+          setAreas([]);
+          setTextBoxes([]);
+        }
+      } else {
         setLines([]);
         setAreas([]);
-        setSelectedLineId(null);
-        setSelectedAreaId(null);
-
-        await renderPage(doc, 1, 1.0);
-      } catch (err) {
-        console.error("Error loading PDF:", err);
+        setTextBoxes([]);
       }
-    };
+    } catch (err) {
+      console.error("Failed to load saved annotations:", err);
+      setLines([]);
+      setAreas([]);
+      setTextBoxes([]);
+    }
 
-    reader.readAsArrayBuffer(file);
-  }
+    // 🔹 load the actual PDF into pdf.js
+    const loadingTask = getDocument({
+      data: buffer,
+    } as DocumentInit);
+
+    try {
+      const doc = await loadingTask.promise;
+      setPdfDoc(doc);
+      setTotalPages(doc.numPages);
+      setPageNum(1);
+      setScale(1.0);
+
+      await renderPage(doc, 1, 1.0);
+    } catch (err) {
+      console.error("Error loading PDF:", err);
+    }
+  };
+
+  reader.readAsArrayBuffer(file);
+}
+
 
   // ---- navigation -------------------------------------------
   async function goToPage(newPage: number) {

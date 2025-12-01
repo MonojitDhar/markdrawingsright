@@ -1251,7 +1251,7 @@ const App: React.FC = () => {
           MarkDrawingRight
         </span>
         <span style={{ opacity: 0.6, fontSize: 13 }}>
-          | custom pdf.js viewer
+          | A PDF markup tool
         </span>
 
         <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>

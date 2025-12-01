@@ -244,6 +244,8 @@ const App: React.FC = () => {
   const viewerRef = useRef<HTMLDivElement | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
 
+  const renderTaskRef = useRef<ReturnType<PDFPageProxy["render"]> | null>(null);
+
   // ---- text tool state --------------------------------------
   const [textBoxes, setTextBoxes] = useState<TextBox[]>([]);
   const [selectedTextId, setSelectedTextId] = useState<number | null>(null);
@@ -470,13 +472,34 @@ useEffect(() => {
     canvas.style.height = `${cssHeight}px`;
     setCanvasSize({ width: cssWidth, height: cssHeight });
 
+        // 🔹 cancel any in-flight render on this canvas before starting a new one
+    if (renderTaskRef.current) {
+      renderTaskRef.current.cancel();
+      renderTaskRef.current = null;
+    }
+
     const renderTask = page.render({
       canvasContext: ctx,
       viewport,
     } as PageRenderParams);
+    renderTaskRef.current = renderTask;
 
-    await renderTask.promise;
+        try {
+      await renderTask.promise;
+    } catch (err: unknown) {
+      // ignore cancellation errors; log anything else
+      const error = err as { name?: string };
+      if (error.name !== "RenderingCancelledException") {
+        console.error("PDF render error:", err);
+      }
+    } finally {
+      if (renderTaskRef.current === renderTask) {
+        renderTaskRef.current = null;
+      }
+    }
+
   }
+
 
   // ---- load file from <input type="file"> -------------------
   // ---- load file from <input type="file"> -------------------
@@ -1187,14 +1210,16 @@ function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
   };
 
   // ---- hand-tool: wheel zoom --------------------------------
-  const handleWheel = (e: React.WheelEvent) => {
+    const handleWheel = (e: React.WheelEvent) => {
     if (tool !== "hand" || !pdfDoc) return;
-    e.preventDefault();
-    e.stopPropagation();
+
     const zoomStep = 0.1;
     const direction = e.deltaY > 0 ? -zoomStep : zoomStep;
+
+    // no preventDefault here – avoids passive-listener warning
     applyZoom(scale + direction);
   };
+
 
   // ---- selection / drag helpers for lines -------------------
   const startLineMove = (e: React.MouseEvent, lineId: number) => {

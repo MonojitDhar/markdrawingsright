@@ -199,6 +199,8 @@ async function computeDocId(buffer: ArrayBuffer): Promise<string> {
     .join("");
 }
 
+
+
 const PDF_BUCKET = "pdfs"; // bucket name you created
 
 async function uploadPdfToStorage(fileHash: string, pdfFile: File) {

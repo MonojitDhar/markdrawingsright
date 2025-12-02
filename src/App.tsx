@@ -645,6 +645,8 @@ function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     setCurrentDocId(docId);
     setCurrentPdfName(file.name);
 
+    setFileHash(docId);
+
     // 🔹 try to restore saved annotations for this doc from localStorage
     try {
       const raw = localStorage.getItem("mdr-docs");

@@ -507,10 +507,10 @@ useEffect(() => {
 
   // ---- Supabase: save current project -----------------------
   const saveProjectToCloud = async (title?: string) => {
-    if (!fileHash) {
-      alert("Load a PDF first so we can link markups to a file.");
-      return;
-    }
+    if (!pdfDoc) {
+    alert("Load a PDF first so we can link markups to a file.");
+    return;
+  }
 
     const payload = buildPayload();
     const now = new Date().toISOString();

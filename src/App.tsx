@@ -199,6 +199,11 @@ async function computeDocId(buffer: ArrayBuffer): Promise<string> {
 
 // ------------------------- App -----------------------------------
 const App: React.FC = () => {
+
+  console.log("VITE URL =", import.meta.env.VITE_SUPABASE_URL);
+  console.log("VITE KEY =", import.meta.env.VITE_SUPABASE_ANON_KEY);
+
+
   const [pdfDoc, setPdfDoc] = useState<PDFDocumentProxy | null>(null);
   const [pageNum, setPageNum] = useState(1);
   const [scale, setScale] = useState(1.0);

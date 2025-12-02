@@ -435,7 +435,9 @@ useEffect(() => {
         const file = new File([blob], fileName, { type: "application/pdf" });
         setPdfFile(file);
 
-        await openPdfFromArrayBuffer(arrayBuffer, fileName);
+        await openPdfFromArrayBuffer(arrayBuffer, fileName, {
+      loadAnnotationsFromLocal: false,
+    });
       }
     }
   })();
@@ -715,7 +717,13 @@ useEffect(() => {
 
 
 // helper to open a PDF from an ArrayBuffer (used by file input + Supabase download)
-const openPdfFromArrayBuffer = async (arrayBuffer: ArrayBuffer, fileName: string) => {
+// helper to open a PDF from an ArrayBuffer (used by file input + Supabase download)
+const openPdfFromArrayBuffer = async (
+  arrayBuffer: ArrayBuffer,
+  fileName: string,
+  opts?: { loadAnnotationsFromLocal?: boolean }
+) => {
+  const { loadAnnotationsFromLocal = true } = opts ?? {};
   const buffer = new Uint8Array(arrayBuffer);
 
   // compute a stable id for this PDF & remember its name
@@ -724,42 +732,45 @@ const openPdfFromArrayBuffer = async (arrayBuffer: ArrayBuffer, fileName: string
   setCurrentPdfName(fileName);
   setFileHash(docId);
 
-  // try to restore saved annotations for this doc from localStorage
-  try {
-    const raw = localStorage.getItem("mdr-docs");
-    if (raw) {
-      const store = JSON.parse(raw) as Record<
-        string,
-        {
-          pdfName?: string | null;
-          lines?: Line[];
-          areas?: AreaShape[];
-          textBoxes?: TextBox[];
-          updatedAt?: number;
-        }
-      >;
+  // 🔹 only restore from localStorage when explicitly allowed
+  if (loadAnnotationsFromLocal) {
+    try {
+      const raw = localStorage.getItem("mdr-docs");
+      if (raw) {
+        const store = JSON.parse(raw) as Record<
+          string,
+          {
+            pdfName?: string | null;
+            lines?: Line[];
+            areas?: AreaShape[];
+            textBoxes?: TextBox[];
+            updatedAt?: number;
+          }
+        >;
 
-      const saved = store[docId];
-      if (saved) {
-        setLines(saved.lines ?? []);
-        setAreas(saved.areas ?? []);
-        setTextBoxes(saved.textBoxes ?? []);
+        const saved = store[docId];
+        if (saved) {
+          setLines(saved.lines ?? []);
+          setAreas(saved.areas ?? []);
+          setTextBoxes(saved.textBoxes ?? []);
+        } else {
+          setLines([]);
+          setAreas([]);
+          setTextBoxes([]);
+        }
       } else {
         setLines([]);
         setAreas([]);
         setTextBoxes([]);
       }
-    } else {
+    } catch (err) {
+      console.error("Failed to load saved annotations:", err);
       setLines([]);
       setAreas([]);
       setTextBoxes([]);
     }
-  } catch (err) {
-    console.error("Failed to load saved annotations:", err);
-    setLines([]);
-    setAreas([]);
-    setTextBoxes([]);
   }
+  // else: keep whatever lines/areas/textBoxes are already in state (e.g. from Supabase)
 
   // load the PDF into pdf.js
   const loadingTask = getDocument({ data: buffer } as DocumentInit);
@@ -775,6 +786,7 @@ const openPdfFromArrayBuffer = async (arrayBuffer: ArrayBuffer, fileName: string
     console.error("Error loading PDF:", err);
   }
 };
+
 
   // ---- load file from <input type="file"> -------------------
 function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {

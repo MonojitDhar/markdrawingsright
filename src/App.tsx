@@ -11,6 +11,9 @@ import type { JSX } from "react/jsx-dev-runtime";
 // Tell pdf.js where the worker file is (LOCAL file, not CDN)
 GlobalWorkerOptions.workerSrc = "/pdf.worker.js";
 
+
+
+
 // ---------- types for pdf.js + annotations -----------------
 type DocumentInit = Parameters<typeof getDocument>[0];
 type PageRenderParams = Parameters<PDFPageProxy["render"]>[0];
@@ -196,11 +199,35 @@ async function computeDocId(buffer: ArrayBuffer): Promise<string> {
     .join("");
 }
 
+const PDF_BUCKET = "pdfs"; // bucket name you created
+
+async function uploadPdfToStorage(fileHash: string, pdfFile: File) {
+  // use a stable path so updates overwrite the same file
+  const pdfPath = `projects/${fileHash}.pdf`;
+
+  const { data, error } = await supabase.storage
+    .from(PDF_BUCKET)
+    .upload(pdfPath, pdfFile, {
+      cacheControl: "3600",
+      upsert: true,               // overwrite if it already exists
+      contentType: "application/pdf",
+    });
+
+  if (error) {
+    console.error("PDF upload error:", error);
+    throw error;
+  }
+
+  console.log("Uploaded PDF:", data);
+
+  // we only really need the path we chose
+  return pdfPath;
+}
 
 // ------------------------- App -----------------------------------
 const App: React.FC = () => {
 
-
+  const [pdfFile, setPdfFile] = useState<File | null>(null);
 
   const [pdfDoc, setPdfDoc] = useState<PDFDocumentProxy | null>(null);
   const [pageNum, setPageNum] = useState(1);
@@ -510,69 +537,94 @@ useEffect(() => {
 
   // ---- Supabase: save current project -----------------------
   const saveProjectToCloud = async (title?: string) => {
-    if (!pdfDoc) {
+  if (!pdfDoc) {
     alert("Load a PDF first so we can link markups to a file.");
     return;
   }
 
-    const payload = buildPayload();
-    const now = new Date().toISOString();
+  if (!fileHash) {
+    alert("Internal error: no file hash for this PDF.");
+    return;
+  }
 
-    try {
-      setIsSavingCloud(true);
+  const payload = buildPayload();
+  const now = new Date().toISOString();
 
-      if (!currentProjectId) {
-        // INSERT new row
-        const { data, error } = await supabase
-          .from("MarkDrawingsRight")
-          .insert({
-            file_hash: fileHash,
-            title: title ?? null,
-            payload,
-            created_at: now,
-            updated_at: now,
-          })
-          .select("id")
-          .single();
+  try {
+    setIsSavingCloud(true);
 
-        if (error || !data) {
-          console.error("Supabase insert error", error);
-          alert("Could not save project to cloud.");
-          return;
-        }
-
-        setCurrentProjectId(data.id as string);
-
-        const shareUrl = `${window.location.origin}?project=${data.id}`;
-        try {
-          await navigator.clipboard?.writeText?.(shareUrl);
-          alert(`Saved! Share link copied:\n${shareUrl}`);
-        } catch {
-          alert(`Saved! Share link:\n${shareUrl}`);
-        }
-      } else {
-        // UPDATE existing row
-        const { error } = await supabase
-          .from("MarkDrawingsRight")
-          .update({
-            file_hash: fileHash,
-            payload,
-            updated_at: now,
-          })
-          .eq("id", currentProjectId);
-
-        if (error) {
-          console.error("Supabase update error", error);
-          alert("Could not update project.");
-          return;
-        }
-
-        alert("Cloud project updated.");
-      }
-    } finally {
-      setIsSavingCloud(false);
+    // 🔹 1) upload the PDF if we have it
+    // (if user restored from a share-link without re-uploading the file,
+    // pdfFile may be null – in that case we just keep any existing pdf_path)
+    let pdfPath: string | undefined;
+    if (pdfFile) {
+      pdfPath = await uploadPdfToStorage(fileHash, pdfFile);
     }
-  };
+
+    if (!currentProjectId) {
+      // 🔹 2) INSERT new row
+      const { data, error } = await supabase
+        .from("MarkDrawingsRight")
+        .insert({
+          file_hash: fileHash,
+          title: title ?? null,
+          payload,
+          pdf_path: pdfPath ?? null, // NEW FIELD
+          created_at: now,
+          updated_at: now,
+        })
+        .select("id")
+        .single();
+
+      if (error || !data) {
+        console.error("Supabase insert error", error);
+        alert("Could not save project to cloud.");
+        return;
+      }
+
+      setCurrentProjectId(data.id as string);
+
+      const shareUrl = `${window.location.origin}?project=${data.id}`;
+      try {
+        await navigator.clipboard?.writeText?.(shareUrl);
+        alert(`Saved! Share link copied:\n${shareUrl}`);
+      } catch {
+        alert(`Saved! Share link:\n${shareUrl}`);
+      }
+    } else {
+      // 🔹 3) UPDATE existing row
+      const updatePayload: Record<string, unknown> = {
+        file_hash: fileHash,
+        payload,
+        updated_at: now,
+      };
+
+      // only touch pdf_path if we actually uploaded a file this time
+      if (pdfPath) {
+        updatePayload.pdf_path = pdfPath;
+      }
+
+      const { error } = await supabase
+        .from("MarkDrawingsRight")
+        .update(updatePayload)
+        .eq("id", currentProjectId);
+
+      if (error) {
+        console.error("Supabase update error", error);
+        alert("Could not update project.");
+        return;
+      }
+
+      alert("Cloud project updated.");
+    }
+  } catch (err) {
+    console.error("Save to cloud failed:", err);
+    alert("Could not upload PDF / save project.");
+  } finally {
+    setIsSavingCloud(false);
+  }
+};
+
 
 
   // ---- core render function ---------------------------------
@@ -636,6 +688,8 @@ useEffect(() => {
 function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
   const file = e.target.files?.[0];
   if (!file) return;
+
+  setPdfFile(file);
 
   const reader = new FileReader();
 

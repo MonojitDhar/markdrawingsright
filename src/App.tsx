@@ -1,4 +1,5 @@
 import React, { useRef, useState, useEffect } from "react";
+import { supabase } from "./supabaseClient";
 import {
   getDocument,
   GlobalWorkerOptions,
@@ -64,6 +65,16 @@ interface AreaShape {
   color: string;
   fillOpacity: number; // 0–1
 }
+
+type MarkupPayload = {
+  fileHash: string | null;
+  pageNum: number;
+  scale: number;
+  lines: Line[];
+  areas: AreaShape[];
+  textBoxes: TextBox[];
+};
+
 
 // stroke pattern helper for line tool
 function getDashArray(style: LineStyle, width: number): string | undefined {
@@ -193,7 +204,12 @@ const App: React.FC = () => {
   const [scale, setScale] = useState(1.0);
   const [totalPages, setTotalPages] = useState<number | null>(null);
 
-  
+  const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
+  const [isSavingCloud, setIsSavingCloud] = useState(false);
+
+  const [fileHash, setFileHash] = useState<string | null>(null);
+
+
   const [currentDocId, setCurrentDocId] = useState<string | null>(null);
   const [currentPdfName, setCurrentPdfName] = useState<string | null>(null);
 
@@ -315,12 +331,56 @@ const App: React.FC = () => {
     setEditingTextId(null);
   };
 
+  const buildPayload = (): MarkupPayload => ({
+    fileHash,
+    pageNum,
+    scale,
+    lines,
+    areas,
+    textBoxes,
+  });
+
   // auto-focus root so key events work (for Backspace/Delete)
   useEffect(() => {
     if (rootRef.current) {
       rootRef.current.focus();
     }
   }, []);
+
+    // On first load, check for ?project=... and restore from Supabase
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const projectId = params.get("project");
+    if (!projectId) return;
+
+    (async () => {
+      const { data, error } = await supabase
+        .from("MarkDrawingsRight")
+        .select("id, file_hash, payload")
+        .eq("id", projectId)
+        .single();
+
+      if (error || !data) {
+        console.error("Supabase load error", error);
+        return;
+      }
+
+      setCurrentProjectId(data.id as string);
+
+      const pl = (data as { payload: MarkupPayload; file_hash: string | null })
+        .payload;
+
+      if (pl) {
+        setLines(pl.lines ?? []);
+        setAreas(pl.areas ?? []);
+        setTextBoxes(pl.textBoxes ?? []);
+        setPageNum(pl.pageNum ?? 1);
+        setScale(pl.scale ?? 1);
+        setFileHash(pl.fileHash ?? data.file_hash ?? null);
+      }
+    })();
+  }, []);
+
 
   // 🔹 persist annotations for the current PDF into localStorage
 useEffect(() => {
@@ -444,6 +504,73 @@ useEffect(() => {
       });
     }
   };
+
+  // ---- Supabase: save current project -----------------------
+  const saveProjectToCloud = async (title?: string) => {
+    if (!fileHash) {
+      alert("Load a PDF first so we can link markups to a file.");
+      return;
+    }
+
+    const payload = buildPayload();
+    const now = new Date().toISOString();
+
+    try {
+      setIsSavingCloud(true);
+
+      if (!currentProjectId) {
+        // INSERT new row
+        const { data, error } = await supabase
+          .from("MarkDrawingsRight")
+          .insert({
+            file_hash: fileHash,
+            title: title ?? null,
+            payload,
+            created_at: now,
+            updated_at: now,
+          })
+          .select("id")
+          .single();
+
+        if (error || !data) {
+          console.error("Supabase insert error", error);
+          alert("Could not save project to cloud.");
+          return;
+        }
+
+        setCurrentProjectId(data.id as string);
+
+        const shareUrl = `${window.location.origin}?project=${data.id}`;
+        try {
+          await navigator.clipboard?.writeText?.(shareUrl);
+          alert(`Saved! Share link copied:\n${shareUrl}`);
+        } catch {
+          alert(`Saved! Share link:\n${shareUrl}`);
+        }
+      } else {
+        // UPDATE existing row
+        const { error } = await supabase
+          .from("MarkDrawingsRight")
+          .update({
+            file_hash: fileHash,
+            payload,
+            updated_at: now,
+          })
+          .eq("id", currentProjectId);
+
+        if (error) {
+          console.error("Supabase update error", error);
+          alert("Could not update project.");
+          return;
+        }
+
+        alert("Cloud project updated.");
+      }
+    } finally {
+      setIsSavingCloud(false);
+    }
+  };
+
 
   // ---- core render function ---------------------------------
   async function renderPage(
@@ -1379,7 +1506,7 @@ function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
           | A PDF markup tool
         </span>
 
-        <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+                <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
           <label
             style={{
               padding: "6px 10px",
@@ -1398,7 +1525,28 @@ function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
               style={{ display: "none" }}
             />
           </label>
+
+          <button
+            onClick={() => void saveProjectToCloud()}
+            disabled={isSavingCloud || !pdfDoc}
+            style={{
+              padding: "6px 10px",
+              borderRadius: 6,
+              border: "1px solid #22c55e",
+              background: "#16a34a",
+              cursor: isSavingCloud || !pdfDoc ? "not-allowed" : "pointer",
+              fontSize: 13,
+              opacity: isSavingCloud || !pdfDoc ? 0.6 : 1,
+            }}
+          >
+            {isSavingCloud
+              ? "Saving..."
+              : currentProjectId
+              ? "Update Cloud"
+              : "Save to Cloud"}
+          </button>
         </div>
+
       </div>
 
       {/* Main area: left sidebar + viewer + right toolbar */}

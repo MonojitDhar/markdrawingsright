@@ -207,6 +207,8 @@ async function uploadPdfToStorage(fileHash: string, pdfFile: File) {
   // use a stable path so updates overwrite the same file
   const pdfPath = `projects/${fileHash}.pdf`;
 
+  console.log("Uploading to bucket", PDF_BUCKET, "path", pdfPath, "file", pdfFile.name);
+
   const { data, error } = await supabase.storage
     .from(PDF_BUCKET)
     .upload(pdfPath, pdfFile, {
@@ -216,7 +218,7 @@ async function uploadPdfToStorage(fileHash: string, pdfFile: File) {
     });
 
   if (error) {
-    console.error("PDF upload error:", error);
+    console.error("PDF has upload error:", error);
     throw error;
   }
 
@@ -372,7 +374,7 @@ const App: React.FC = () => {
     textBoxes,
   });
 
-  // auto-focus root so key events work (for Backspace/Delete)
+  
   useEffect(() => {
     if (rootRef.current) {
       rootRef.current.focus();

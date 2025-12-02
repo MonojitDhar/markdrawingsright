@@ -381,39 +381,66 @@ const App: React.FC = () => {
     }
   }, []);
 
-    // On first load, check for ?project=... and restore from Supabase
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const projectId = params.get("project");
-    if (!projectId) return;
+useEffect(() => {
+  const params = new URLSearchParams(window.location.search);
+  const projectId = params.get("project");
+  if (!projectId) return;
 
-    (async () => {
-      const { data, error } = await supabase
-        .from("MarkDrawingsRight")
-        .select("id, file_hash, payload")
-        .eq("id", projectId)
-        .single();
+  (async () => {
+    const { data, error } = await supabase
+      .from("MarkDrawingsRight")
+      .select("id, file_hash, payload, pdf_path, title")
+      .eq("id", projectId)
+      .single();
 
-      if (error || !data) {
-        console.error("Supabase load error", error);
+    if (error || !data) {
+      console.error("Supabase load error", error);
+      return;
+    }
+
+    setCurrentProjectId(data.id as string);
+
+    const pl = (data as {
+      payload: MarkupPayload;
+      file_hash: string | null;
+      pdf_path: string | null;
+      title: string | null;
+    }).payload;
+
+    if (pl) {
+      setLines(pl.lines ?? []);
+      setAreas(pl.areas ?? []);
+      setTextBoxes(pl.textBoxes ?? []);
+      setPageNum(pl.pageNum ?? 1);
+      setScale(pl.scale ?? 1);
+      setFileHash(pl.fileHash ?? data.file_hash ?? null);
+    }
+
+    // 🔹 NEW: download and open the PDF if we have a stored path
+    if (data.pdf_path) {
+      const { data: blob, error: downloadError } = await supabase.storage
+        .from(PDF_BUCKET)
+        .download(data.pdf_path);
+
+      if (downloadError) {
+        console.error("Failed to download PDF from Storage:", downloadError);
         return;
       }
 
-      setCurrentProjectId(data.id as string);
+      if (blob) {
+        const arrayBuffer = await blob.arrayBuffer();
+        const fileName = data.title ?? "document.pdf";
 
-      const pl = (data as { payload: MarkupPayload; file_hash: string | null })
-        .payload;
+        // Optional: keep a File object around for future re-saves
+        const file = new File([blob], fileName, { type: "application/pdf" });
+        setPdfFile(file);
 
-      if (pl) {
-        setLines(pl.lines ?? []);
-        setAreas(pl.areas ?? []);
-        setTextBoxes(pl.textBoxes ?? []);
-        setPageNum(pl.pageNum ?? 1);
-        setScale(pl.scale ?? 1);
-        setFileHash(pl.fileHash ?? data.file_hash ?? null);
+        await openPdfFromArrayBuffer(arrayBuffer, fileName);
       }
-    })();
-  }, []);
+    }
+  })();
+}, []);
+
 
 
   // 🔹 persist annotations for the current PDF into localStorage
@@ -687,7 +714,68 @@ useEffect(() => {
   }
 
 
-  // ---- load file from <input type="file"> -------------------
+// helper to open a PDF from an ArrayBuffer (used by file input + Supabase download)
+const openPdfFromArrayBuffer = async (arrayBuffer: ArrayBuffer, fileName: string) => {
+  const buffer = new Uint8Array(arrayBuffer);
+
+  // compute a stable id for this PDF & remember its name
+  const docId = await computeDocId(arrayBuffer);
+  setCurrentDocId(docId);
+  setCurrentPdfName(fileName);
+  setFileHash(docId);
+
+  // try to restore saved annotations for this doc from localStorage
+  try {
+    const raw = localStorage.getItem("mdr-docs");
+    if (raw) {
+      const store = JSON.parse(raw) as Record<
+        string,
+        {
+          pdfName?: string | null;
+          lines?: Line[];
+          areas?: AreaShape[];
+          textBoxes?: TextBox[];
+          updatedAt?: number;
+        }
+      >;
+
+      const saved = store[docId];
+      if (saved) {
+        setLines(saved.lines ?? []);
+        setAreas(saved.areas ?? []);
+        setTextBoxes(saved.textBoxes ?? []);
+      } else {
+        setLines([]);
+        setAreas([]);
+        setTextBoxes([]);
+      }
+    } else {
+      setLines([]);
+      setAreas([]);
+      setTextBoxes([]);
+    }
+  } catch (err) {
+    console.error("Failed to load saved annotations:", err);
+    setLines([]);
+    setAreas([]);
+    setTextBoxes([]);
+  }
+
+  // load the PDF into pdf.js
+  const loadingTask = getDocument({ data: buffer } as DocumentInit);
+
+  try {
+    const doc = await loadingTask.promise;
+    setPdfDoc(doc);
+    setTotalPages(doc.numPages);
+    setPageNum(1);
+    setScale(1.0);
+    await renderPage(doc, 1, 1.0);
+  } catch (err) {
+    console.error("Error loading PDF:", err);
+  }
+};
+
   // ---- load file from <input type="file"> -------------------
 function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
   const file = e.target.files?.[0];
@@ -696,75 +784,14 @@ function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
   setPdfFile(file);
 
   const reader = new FileReader();
-
   reader.onload = async () => {
     const arrayBuffer = reader.result as ArrayBuffer;
-    const buffer = new Uint8Array(arrayBuffer);
-
-    // 🔹 compute a stable id for this PDF & remember its name
-    const docId = await computeDocId(arrayBuffer);
-    setCurrentDocId(docId);
-    setCurrentPdfName(file.name);
-
-    setFileHash(docId);
-
-    // 🔹 try to restore saved annotations for this doc from localStorage
-    try {
-      const raw = localStorage.getItem("mdr-docs");
-      if (raw) {
-        const store = JSON.parse(raw) as Record<
-          string,
-          {
-            pdfName?: string | null;
-            lines?: Line[];
-            areas?: AreaShape[];
-            textBoxes?: TextBox[];
-            updatedAt?: number;
-          }
-        >;
-
-        const saved = store[docId];
-        if (saved) {
-          setLines(saved.lines ?? []);
-          setAreas(saved.areas ?? []);
-          setTextBoxes(saved.textBoxes ?? []);
-        } else {
-          setLines([]);
-          setAreas([]);
-          setTextBoxes([]);
-        }
-      } else {
-        setLines([]);
-        setAreas([]);
-        setTextBoxes([]);
-      }
-    } catch (err) {
-      console.error("Failed to load saved annotations:", err);
-      setLines([]);
-      setAreas([]);
-      setTextBoxes([]);
-    }
-
-    // 🔹 load the actual PDF into pdf.js
-    const loadingTask = getDocument({
-      data: buffer,
-    } as DocumentInit);
-
-    try {
-      const doc = await loadingTask.promise;
-      setPdfDoc(doc);
-      setTotalPages(doc.numPages);
-      setPageNum(1);
-      setScale(1.0);
-
-      await renderPage(doc, 1, 1.0);
-    } catch (err) {
-      console.error("Error loading PDF:", err);
-    }
+    await openPdfFromArrayBuffer(arrayBuffer, file.name);
   };
 
   reader.readAsArrayBuffer(file);
 }
+
 
 
   // ---- navigation -------------------------------------------

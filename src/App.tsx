@@ -253,6 +253,9 @@ const App: React.FC = () => {
     height: number;
   } | null>(null);
 
+  const [pageSize, setPageSize] = useState<{ width: number; height: number } | null>(null);
+
+
   // current tool: hand | line | area
   const [tool, setTool] = useState<ToolMode>("hand");
 
@@ -662,58 +665,63 @@ useEffect(() => {
 
   // ---- core render function ---------------------------------
   async function renderPage(
-    doc: PDFDocumentProxy,
-    pageNumber: number,
-    zoom: number
-  ) {
-    const page = await doc.getPage(pageNumber);
+  doc: PDFDocumentProxy,
+  pageNumber: number,
+  zoom: number
+) {
+  const page = await doc.getPage(pageNumber);
 
-    const pixelRatio = window.devicePixelRatio || 1;
-    const viewport = page.getViewport({ scale: zoom * pixelRatio * 2 });
+  const pixelRatio = window.devicePixelRatio || 1;
 
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+  // store *unscaled* page size for fit-to-width/height
+  const baseViewport = page.getViewport({ scale: 1 });
+  setPageSize({ width: baseViewport.width, height: baseViewport.height });
 
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
+  // scaled viewport
+  const viewport = page.getViewport({ scale: zoom * pixelRatio });
 
-    canvas.width = viewport.width;
-    canvas.height = viewport.height;
+  const canvas = canvasRef.current;
+  if (!canvas) return;
 
-    const cssWidth = viewport.width / pixelRatio;
-    const cssHeight = viewport.height / pixelRatio;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
 
-    canvas.style.width = `${cssWidth}px`;
-    canvas.style.height = `${cssHeight}px`;
-    setCanvasSize({ width: cssWidth, height: cssHeight });
+  canvas.width = viewport.width;
+  canvas.height = viewport.height;
 
-        // 🔹 cancel any in-flight render on this canvas before starting a new one
-    if (renderTaskRef.current) {
-      renderTaskRef.current.cancel();
+  const cssWidth = viewport.width / pixelRatio;
+  const cssHeight = viewport.height / pixelRatio;
+
+  canvas.style.width = `${cssWidth}px`;
+  canvas.style.height = `${cssHeight}px`;
+  setCanvasSize({ width: cssWidth, height: cssHeight });
+
+  // cancel any in-flight render
+  if (renderTaskRef.current) {
+    renderTaskRef.current.cancel();
+    renderTaskRef.current = null;
+  }
+
+  const renderTask = page.render({
+    canvasContext: ctx,
+    viewport,
+  } as PageRenderParams);
+  renderTaskRef.current = renderTask;
+
+  try {
+    await renderTask.promise;
+  } catch (err: unknown) {
+    const error = err as { name?: string };
+    if (error.name !== "RenderingCancelledException") {
+      console.error("PDF render error:", err);
+    }
+  } finally {
+    if (renderTaskRef.current === renderTask) {
       renderTaskRef.current = null;
     }
-
-    const renderTask = page.render({
-      canvasContext: ctx,
-      viewport,
-    } as PageRenderParams);
-    renderTaskRef.current = renderTask;
-
-        try {
-      await renderTask.promise;
-    } catch (err: unknown) {
-      // ignore cancellation errors; log anything else
-      const error = err as { name?: string };
-      if (error.name !== "RenderingCancelledException") {
-        console.error("PDF render error:", err);
-      }
-    } finally {
-      if (renderTaskRef.current === renderTask) {
-        renderTaskRef.current = null;
-      }
-    }
-
   }
+}
+
 
 
 // helper to open a PDF from an ArrayBuffer (used by file input + Supabase download)
@@ -839,22 +847,66 @@ function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
 
   // ---- zoom helpers -----------------------------------------
   const applyZoom = (newScale: number) => {
-    if (!pdfDoc) return;
-    const clamped = Math.min(3, Math.max(0.25, newScale));
-    if (clamped === scale) return;
-    setScale(clamped);
-    void renderPage(pdfDoc, pageNum, clamped);
-  };
+  if (!pdfDoc || !viewerRef.current) return;
+
+  const clamped = Math.min(2, Math.max(0.15, newScale));
+  if (clamped === scale) return;
+
+  const viewer = viewerRef.current;
+  const prevScale = scale;
+
+  // current center of viewport (in scroll coordinates)
+  const prevCenterX = viewer.scrollLeft + viewer.clientWidth / 2;
+  const prevCenterY = viewer.scrollTop + viewer.clientHeight / 2;
+
+  setScale(clamped);
+
+  void (async () => {
+    await renderPage(pdfDoc, pageNum, clamped);
+
+    const factor = prevScale ? clamped / prevScale : 1;
+
+    viewer.scrollLeft = prevCenterX * factor - viewer.clientWidth / 2;
+    viewer.scrollTop = prevCenterY * factor - viewer.clientHeight / 2;
+  })();
+};
+
 
   const handleZoomOut = () => {
     if (!pdfDoc) return;
-    applyZoom(scale - 0.25);
+    applyZoom(scale - 0.05);
   };
 
   const handleZoomIn = () => {
     if (!pdfDoc) return;
-    applyZoom(scale + 0.25);
+    applyZoom(scale + 0.05);
   };
+
+const handleFitWidth = () => {
+  if (!pdfDoc || !pageSize || !viewerRef.current) return;
+
+  const viewer = viewerRef.current;
+  const padding = pdfDoc ? 24 : 0; // 12px left + 12px right
+  const availableWidth = viewer.clientWidth - padding;
+  if (availableWidth <= 0) return;
+
+  const newScale = availableWidth / pageSize.width;
+  applyZoom(newScale);
+};
+
+const handleFitHeight = () => {
+  if (!pdfDoc || !pageSize || !viewerRef.current) return;
+
+  const viewer = viewerRef.current;
+  const padding = pdfDoc ? 24 : 0; // 12px top + 12px bottom
+  const availableHeight = viewer.clientHeight - padding;
+  if (availableHeight <= 0) return;
+
+  const newScale = availableHeight / pageSize.height;
+  applyZoom(newScale);
+};
+
+
 
   // ---- line style / color / thickness affecting selected line
   const handleChangeLineStyle = (style: LineStyle) => {
@@ -1442,7 +1494,7 @@ function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const handleWheel = (e: React.WheelEvent) => {
     if (tool !== "hand" || !pdfDoc) return;
 
-    const zoomStep = 0.1;
+    const zoomStep = 0.05;
     const direction = e.deltaY > 0 ? -zoomStep : zoomStep;
 
     // no preventDefault here – avoids passive-listener warning
@@ -1655,15 +1707,14 @@ function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
       <div
         style={{
           flex: 1,
-          display: "flex",
-          flexDirection: "row",
+          display: "grid",
+          gridTemplateColumns: "80px minmax(0, 1fr) 52px",
           minHeight: 0,
         }}
       >
         {/* LEFT SIDEBAR – tools + styles only */}
         <div
           style={{
-            width: 80,
             padding: "16px 10px",
             borderRight: "1px solid #27272f",
             display: "flex",
@@ -2152,15 +2203,13 @@ function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
         <div
           ref={viewerRef}
           style={{
-            flex: 1,
-            overflow: isHand ? "hidden" : "auto",
-            display: "flex",
-            justifyContent: "center",
-            alignItems: "flex-start",
-
-            padding: pdfDoc ? 12 : 0,
-            cursor: isHand ? "grab" : "default",
-            overscrollBehavior: "none",
+    flex: 1,
+    overflow: isHand ? "hidden" : "auto",
+    padding: pdfDoc ? 12 : 0,
+    cursor: isHand ? "grab" : "default",
+    overscrollBehavior: "none",
+    background: "#111216",
+    position: "relative",
           }}
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
@@ -2169,7 +2218,13 @@ function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
           onWheel={handleWheel}
         >
           {pdfDoc ? (
-            <div style={{ position: "relative" }}>
+            
+            <div style={{      position: "relative",
+      display: "block",
+      margin: "0 auto",                 // center when smaller than viewport
+      width: canvasSize
+        ? `${canvasSize.width}px`
+        : "fit-content",   }}>
               <canvas
                 ref={canvasRef}
                 style={{
@@ -2773,7 +2828,6 @@ function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
         {/* RIGHT TOOLBAR – narrow icon bar */}
         <div
           style={{
-            width: 52,
             padding: "10px 6px",
             borderLeft: "1px solid #27272f",
             background: "#05060a",
@@ -2844,26 +2898,45 @@ function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
             }}
           />
 
-          {/* ZOOM */}
-          <button
-            style={iconButtonStyle}
-            onClick={handleZoomOut}
-            disabled={!pdfDoc}
-            title="Zoom out"
-          >
-            −
-          </button>
-          <div style={{ color: "#9ca3af", fontSize: 10 }}>
-            {Math.round(scale * 100)}%
-          </div>
-          <button
-            style={iconButtonStyle}
-            onClick={handleZoomIn}
-            disabled={!pdfDoc}
-            title="Zoom in"
-          >
-            +
-          </button>
+{/* ZOOM */}
+<button
+  style={iconButtonStyle}
+  onClick={handleZoomOut}
+  disabled={!pdfDoc}
+  title="Zoom out"
+>
+  −
+</button>
+<div style={{ color: "#9ca3af", fontSize: 10 }}>
+  {Math.round(scale * 100)}%
+</div>
+<button
+  style={iconButtonStyle}
+  onClick={handleZoomIn}
+  disabled={!pdfDoc}
+  title="Zoom in"
+>
+  +
+</button>
+
+{/* Fit buttons */}
+<button
+  style={{ ...iconButtonStyle, marginTop: 4 }}
+  onClick={handleFitWidth}
+  disabled={!pdfDoc}
+  title="Fit to width"
+>
+  ↔
+</button>
+<button
+  style={{ ...iconButtonStyle, marginTop: 4 }}
+  onClick={handleFitHeight}
+  disabled={!pdfDoc}
+  title="Fit to height"
+>
+  ↕
+</button>
+
 
           {/* Spacer pushes selection actions to bottom */}
           <div style={{ flex: 1 }} />

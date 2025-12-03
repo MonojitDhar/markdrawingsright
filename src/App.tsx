@@ -7,6 +7,8 @@ import {
   type PDFPageProxy,
 } from "pdfjs-dist";
 import type { JSX } from "react/jsx-dev-runtime";
+import { PDFDocument, rgb, StandardFonts } from "pdf-lib";
+
 
 // Tell pdf.js where the worker file is (LOCAL file, not CDN)
 GlobalWorkerOptions.workerSrc = "/pdf.worker.js";
@@ -571,6 +573,202 @@ useEffect(() => {
     }
   };
 
+  const downloadPdfWithMarkups = async () => {
+  if (!pdfRawBytes) {
+    alert("No original PDF loaded.");
+    return;
+  }
+
+  try {
+    const pdfLibDoc = await PDFDocument.load(pdfRawBytes);
+    const pages = pdfLibDoc.getPages();
+    const font = await pdfLibDoc.embedFont(StandardFonts.Helvetica);
+
+    // For each page, draw lines / areas / text
+    pages.forEach((page, index) => {
+      const pageNumber = index + 1;
+      const { width, height } = page.getSize();
+
+      // ---- LINES ----
+      const linesOnPage = lines.filter((l) => l.page === pageNumber);
+      for (const line of linesOnPage) {
+        const [r, g, b] = hexToRgb01(line.color);
+        const x1 = line.x1 * width;
+        const y1 = height - line.y1 * height;
+        const x2 = line.x2 * width;
+        const y2 = height - line.y2 * height;
+
+        const dash =
+          line.style === "dashed"
+            ? [4 * line.thickness, 2 * line.thickness]
+            : line.style === "dotted"
+            ? [line.thickness, 2 * line.thickness]
+            : line.style === "dotdash"
+            ? [line.thickness, 1.5 * line.thickness, 4 * line.thickness, 1.5 * line.thickness]
+            : undefined;
+
+        page.drawLine({
+          start: { x: x1, y: y1 },
+          end: { x: x2, y: y2 },
+          thickness: line.thickness,
+          color: rgb(r, g, b),
+          dashArray: dash,
+        });
+
+        // (optional) ignore wavy + arrowEnd in the flattened export for now
+      }
+
+      // ---- AREAS ----
+      const areasOnPage = areas.filter((a) => a.page === pageNumber);
+      
+      for (const area of areasOnPage) {
+        const [r, g, b] = hexToRgb01(area.color);
+        const strokeColor = rgb(r, g, b);
+        const fillColor = rgb(r, g, b);
+
+        if (area.type === "freeform" && area.points.length > 1) {
+          const pts = area.points.map((p) => ({
+            x: p.x * width,
+            y: height - p.y * height,
+          }));
+          const path = pts
+  .map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`)
+  .join(" ") + " Z";
+          page.drawSvgPath(path, {
+            borderColor: strokeColor,
+            borderWidth: area.thickness,
+            color: fillColor,
+            opacity: area.fillOpacity,
+          });
+        } else if (area.points.length >= 2) {
+          const [p1, p2] = area.points;
+          const x1 = p1.x * width;
+          const y1 = height - p1.y * height;
+          const x2 = p2.x * width;
+          const y2 = height - p2.y * height;
+
+          if (area.type === "rect") {
+            const rx = Math.min(x1, x2);
+            const ry = Math.min(y1, y2);
+            const rw = Math.abs(x2 - x1);
+            const rh = Math.abs(y2 - y1);
+
+            page.drawRectangle({
+              x: rx,
+              y: ry - rh,
+              width: rw,
+              height: rh,
+              borderColor: strokeColor,
+              borderWidth: area.thickness,
+              color: fillColor,
+              opacity: area.fillOpacity,
+            });
+          } else if (area.type === "circle") {
+            const cx = (x1 + x2) / 2;
+            const cy = (y1 + y2) / 2;
+            const rPx = Math.hypot(x2 - x1, y2 - y1) / 2;
+
+            page.drawCircle({
+              x: cx,
+              y: cy,
+              size: rPx,
+              borderColor: strokeColor,
+              borderWidth: area.thickness,
+              color: fillColor,
+              opacity: area.fillOpacity,
+            });
+          } else {
+            // triangle
+            const tx1 = x1;
+            const ty1 = y1;
+            const tx2 = x2;
+            const ty2 = y1;
+            const tx3 = x2;
+            const ty3 = y2;
+
+            const triPath =
+  `M ${tx1} ${ty1} L ${tx2} ${ty2} L ${tx3} ${ty3} Z`;
+
+page.drawSvgPath(triPath, {
+  borderColor: strokeColor,
+  borderWidth: area.thickness,
+  color: fillColor,
+  opacity: area.fillOpacity,
+});
+
+          }
+        }
+      }
+
+      // ---- TEXT BOXES ----
+      const textOnPage = textBoxes.filter((b) => b.page === pageNumber);
+      for (const box of textOnPage) {
+        const [tr, tg, tb] = hexToRgb01(box.textColor);
+        const textColor = rgb(tr, tg, tb);
+
+        const x = box.x * width;
+        const boxHeight = box.height * height;
+        const yTop = height - box.y * height; // top in PDF coords
+
+        // background
+        if (box.solidBackground) {
+          const [br, bg, bb] = hexToRgb01(box.backgroundColor);
+          page.drawRectangle({
+            x,
+            y: yTop - boxHeight,
+            width: box.width * width,
+            height: boxHeight,
+            color: rgb(br, bg, bb),
+            opacity: 1,
+          });
+        }
+
+        const linesText = (box.text || "").split(/\r?\n/);
+        let cursorY = yTop - box.fontSize - 4; // padding
+
+        const textX = x + 4; // left padding
+        for (const lineText of linesText) {
+          if (!lineText) {
+            cursorY -= box.fontSize * 1.2;
+            continue;
+          }
+          page.drawText(lineText, {
+            x: textX,
+            y: cursorY,
+            size: box.fontSize,
+            font,
+            color: textColor,
+          });
+          cursorY -= box.fontSize * 1.2;
+        }
+      }
+    });
+
+    // ---- embed editable markups as metadata ----
+    const annotationsPayload = { lines, areas, textBoxes };
+    pdfLibDoc.setSubject("MDR:" + encodeAnnotations(annotationsPayload));
+
+    const outBytes = await pdfLibDoc.save();
+    
+const blob = new Blob([outBytes.buffer as ArrayBuffer], {
+  type: "application/pdf",
+});
+    const url = URL.createObjectURL(blob);
+
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = (currentPdfName ?? "marked") + "_marked.pdf";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    console.error("Failed to build marked-up PDF:", err);
+    alert("Could not generate marked-up PDF.");
+  }
+};
+
+
   // ---- Supabase: save current project -----------------------
   const saveProjectToCloud = async (title?: string) => {
   if (!pdfDoc) {
@@ -662,6 +860,38 @@ useEffect(() => {
 };
 
 
+// Keep raw PDF bytes around so we can re-write them
+const [pdfRawBytes, setPdfRawBytes] = useState<Uint8Array | null>(null);
+
+// Hex → pdf-lib rgb (0–1)
+function hexToRgb01(hex: string): [number, number, number] {
+  // strip alpha if present (#rrggbbaa)
+  if (hex.length === 9) hex = hex.slice(0, 7);
+  const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+  if (!m) return [0, 0, 0];
+  return [
+    parseInt(m[1], 16) / 255,
+    parseInt(m[2], 16) / 255,
+    parseInt(m[3], 16) / 255,
+  ];
+}
+
+// encode/decode annotations into a metadata-safe base64 string
+function encodeAnnotations(data: unknown): string {
+  const json = JSON.stringify(data);
+  return btoa(encodeURIComponent(json));
+}
+
+function decodeAnnotations(str: string) {
+  try {
+    const json = decodeURIComponent(atob(str));
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
+}
+
+
 
   // ---- core render function ---------------------------------
   async function renderPage(
@@ -734,14 +964,43 @@ const openPdfFromArrayBuffer = async (
   const { loadAnnotationsFromLocal = true } = opts ?? {};
   const buffer = new Uint8Array(arrayBuffer);
 
+  // keep raw bytes for export later
+  setPdfRawBytes(buffer);
+
   // compute a stable id for this PDF & remember its name
   const docId = await computeDocId(arrayBuffer);
   setCurrentDocId(docId);
   setCurrentPdfName(fileName);
   setFileHash(docId);
 
-  // 🔹 only restore from localStorage when explicitly allowed
+  let restoredFromEmbedded = false;
+
+  // 1) If allowed, try to restore from embedded metadata first
   if (loadAnnotationsFromLocal) {
+    try {
+      const libDoc = await PDFDocument.load(buffer);
+      const subject = libDoc.getSubject();
+
+      if (subject && subject.startsWith("MDR:")) {
+        const encoded = subject.slice(4);
+        const data = decodeAnnotations(encoded) as
+          | { lines?: Line[]; areas?: AreaShape[]; textBoxes?: TextBox[] }
+          | null;
+
+        if (data) {
+          setLines(data.lines ?? []);
+          setAreas(data.areas ?? []);
+          setTextBoxes(data.textBoxes ?? []);
+          restoredFromEmbedded = true;
+        }
+      }
+    } catch (err) {
+      console.error("Failed to read embedded MDR annotations:", err);
+    }
+  }
+
+  // 2) If no embedded data (or loadAnnotationsFromLocal = false), use localStorage
+  if (loadAnnotationsFromLocal && !restoredFromEmbedded) {
     try {
       const raw = localStorage.getItem("mdr-docs");
       if (raw) {
@@ -778,9 +1037,8 @@ const openPdfFromArrayBuffer = async (
       setTextBoxes([]);
     }
   }
-  // else: keep whatever lines/areas/textBoxes are already in state (e.g. from Supabase)
 
-  // load the PDF into pdf.js
+  // 3) load the PDF into pdf.js for viewing
   const loadingTask = getDocument({ data: buffer } as DocumentInit);
 
   try {
@@ -794,6 +1052,7 @@ const openPdfFromArrayBuffer = async (
     console.error("Error loading PDF:", err);
   }
 };
+
 
 
   // ---- load file from <input type="file"> -------------------
@@ -1699,6 +1958,23 @@ const handleFitHeight = () => {
               ? "Update Cloud"
               : "Save to Cloud"}
           </button>
+
+          <button
+    onClick={() => void downloadPdfWithMarkups()}
+    disabled={!pdfDoc}
+    style={{
+      padding: "6px 10px",
+      borderRadius: 6,
+      border: "1px solid #64748b",
+      background: "#020617",
+      cursor: !pdfDoc ? "not-allowed" : "pointer",
+      fontSize: 13,
+      color: "#e5e7eb",
+      opacity: !pdfDoc ? 0.6 : 1,
+    }}
+  >
+    Download PDF + Markups
+  </button>
         </div>
 
       </div>

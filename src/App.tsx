@@ -379,6 +379,9 @@ const App: React.FC = () => {
     textBoxes,
   });
 
+  const [originalPdfBytes, setOriginalPdfBytes] = useState<Uint8Array | null>(null);
+
+
   
   useEffect(() => {
     if (rootRef.current) {
@@ -763,6 +766,7 @@ const blob = new Blob([outBytes.buffer as ArrayBuffer], {
     a.remove();
     URL.revokeObjectURL(url);
   } catch (err) {
+    
     console.error("Failed to build marked-up PDF:", err);
     alert("Could not generate marked-up PDF.");
   }
@@ -965,7 +969,11 @@ const openPdfFromArrayBuffer = async (
   const buffer = new Uint8Array(arrayBuffer);
 
   // keep raw bytes for export later
+  setOriginalPdfBytes(buffer);
   setPdfRawBytes(buffer);
+
+  console.log(originalPdfBytes, originalPdfBytes?.constructor.name);
+
 
   // compute a stable id for this PDF & remember its name
   const docId = await computeDocId(arrayBuffer);

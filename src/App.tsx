@@ -577,17 +577,20 @@ useEffect(() => {
   };
 
   const downloadPdfWithMarkups = async () => {
-  if (!pdfRawBytes) {
+  // Use the actual File object as the source of truth
+  if (!pdfFile) {
     alert("No original PDF loaded.");
     return;
   }
 
   try {
-    const pdfLibDoc = await PDFDocument.load(pdfRawBytes);
+    // 1) Read the file bytes fresh
+    const arrayBuffer = await pdfFile.arrayBuffer();
+    const pdfLibDoc = await PDFDocument.load(arrayBuffer);
+
     const pages = pdfLibDoc.getPages();
     const font = await pdfLibDoc.embedFont(StandardFonts.Helvetica);
 
-    // For each page, draw lines / areas / text
     pages.forEach((page, index) => {
       const pageNumber = index + 1;
       const { width, height } = page.getSize();
@@ -617,13 +620,10 @@ useEffect(() => {
           color: rgb(r, g, b),
           dashArray: dash,
         });
-
-        // (optional) ignore wavy + arrowEnd in the flattened export for now
       }
 
       // ---- AREAS ----
       const areasOnPage = areas.filter((a) => a.page === pageNumber);
-      
       for (const area of areasOnPage) {
         const [r, g, b] = hexToRgb01(area.color);
         const strokeColor = rgb(r, g, b);
@@ -634,9 +634,11 @@ useEffect(() => {
             x: p.x * width,
             y: height - p.y * height,
           }));
-          const path = pts
-  .map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`)
-  .join(" ") + " Z";
+          const path =
+            pts
+              .map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`)
+              .join(" ") + " Z";
+
           page.drawSvgPath(path, {
             borderColor: strokeColor,
             borderWidth: area.thickness,
@@ -689,16 +691,13 @@ useEffect(() => {
             const tx3 = x2;
             const ty3 = y2;
 
-            const triPath =
-  `M ${tx1} ${ty1} L ${tx2} ${ty2} L ${tx3} ${ty3} Z`;
-
-page.drawSvgPath(triPath, {
-  borderColor: strokeColor,
-  borderWidth: area.thickness,
-  color: fillColor,
-  opacity: area.fillOpacity,
-});
-
+            const triPath = `M ${tx1} ${ty1} L ${tx2} ${ty2} L ${tx3} ${ty3} Z`;
+            page.drawSvgPath(triPath, {
+              borderColor: strokeColor,
+              borderWidth: area.thickness,
+              color: fillColor,
+              opacity: area.fillOpacity,
+            });
           }
         }
       }
@@ -711,9 +710,8 @@ page.drawSvgPath(triPath, {
 
         const x = box.x * width;
         const boxHeight = box.height * height;
-        const yTop = height - box.y * height; // top in PDF coords
+        const yTop = height - box.y * height;
 
-        // background
         if (box.solidBackground) {
           const [br, bg, bb] = hexToRgb01(box.backgroundColor);
           page.drawRectangle({
@@ -727,9 +725,9 @@ page.drawSvgPath(triPath, {
         }
 
         const linesText = (box.text || "").split(/\r?\n/);
-        let cursorY = yTop - box.fontSize - 4; // padding
+        let cursorY = yTop - box.fontSize - 4;
+        const textX = x + 4;
 
-        const textX = x + 4; // left padding
         for (const lineText of linesText) {
           if (!lineText) {
             cursorY -= box.fontSize * 1.2;
@@ -747,17 +745,19 @@ page.drawSvgPath(triPath, {
       }
     });
 
-    // ---- embed editable markups as metadata ----
+    // 2) embed annotations into Subject
     const annotationsPayload = { lines, areas, textBoxes };
     pdfLibDoc.setSubject("MDR:" + encodeAnnotations(annotationsPayload));
 
+    // 3) save & download
     const outBytes = await pdfLibDoc.save();
-    
-const blob = new Blob([outBytes.buffer as ArrayBuffer], {
-  type: "application/pdf",
-});
-    const url = URL.createObjectURL(blob);
 
+    // TS hack: treat outBytes as BlobPart, but at runtime this is just the same Uint8Array
+    const blob = new Blob([outBytes as unknown as BlobPart], {
+      type: "application/pdf",
+    });
+
+    const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
     a.download = (currentPdfName ?? "marked") + "_marked.pdf";
@@ -766,11 +766,11 @@ const blob = new Blob([outBytes.buffer as ArrayBuffer], {
     a.remove();
     URL.revokeObjectURL(url);
   } catch (err) {
-    
     console.error("Failed to build marked-up PDF:", err);
     alert("Could not generate marked-up PDF.");
   }
 };
+
 
 
   // ---- Supabase: save current project -----------------------

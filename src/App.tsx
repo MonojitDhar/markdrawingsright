@@ -578,6 +578,298 @@ useEffect(() => {
     }
   };
 
+  // --- Outline helpers for flattened export ----------------------
+
+function drawDashedLineOnPage(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  page: any,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  thickness: number,
+  color: ReturnType<typeof rgb>
+) {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const length = Math.hypot(dx, dy);
+  if (!length) return;
+
+  const ux = dx / length;
+  const uy = dy / length;
+
+  const dashLen = 6 * thickness;
+  const gapLen = 4 * thickness;
+  let dist = 0;
+
+  while (dist < length) {
+    const start = dist;
+    const end = Math.min(dist + dashLen, length);
+
+    const sx = x1 + ux * start;
+    const sy = y1 + uy * start;
+    const ex = x1 + ux * end;
+    const ey = y1 + uy * end;
+
+    page.drawLine({
+      start: { x: sx, y: sy },
+      end: { x: ex, y: ey },
+      thickness,
+      color,
+    });
+
+    dist += dashLen + gapLen;
+  }
+}
+
+function drawCloudLineOnPage(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  page: any,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  thickness: number,
+  color: ReturnType<typeof rgb>
+) {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const length = Math.hypot(dx, dy);
+  if (!length) return;
+
+  const ux = dx / length;
+  const uy = dy / length;
+
+  const step = 2.5 * thickness; // spacing of bumps
+  const radius = 1.2 * thickness;
+  const bumps = Math.max(2, Math.round(length / step));
+
+  for (let i = 0; i <= bumps; i++) {
+    const d = (i / bumps) * length;
+    const cx = x1 + ux * d;
+    const cy = y1 + uy * d;
+
+    page.drawCircle({
+      x: cx,
+      y: cy,
+      size: radius,
+      color,
+      opacity: 1,
+    });
+  }
+}
+
+function drawZigzagLineOnPage(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  page: any,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  thickness: number,
+  color: ReturnType<typeof rgb>
+) {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const length = Math.hypot(dx, dy);
+  if (!length) return;
+
+  const ux = dx / length;
+  const uy = dy / length;
+  const px = -uy; // perpendicular
+  const py = ux;
+
+  const segmentLen = 4 * thickness;
+  const count = Math.max(2, Math.round(length / segmentLen));
+
+  let prevX = x1;
+  let prevY = y1;
+
+  for (let i = 1; i <= count; i++) {
+    const t = (i / count) * length;
+    const baseX = x1 + ux * t;
+    const baseY = y1 + uy * t;
+    const amp = (i % 2 === 0 ? 1 : -1) * 1.5 * thickness;
+
+    const zx = baseX + px * amp;
+    const zy = baseY + py * amp;
+
+    page.drawLine({
+      start: { x: prevX, y: prevY },
+      end: { x: zx, y: zy },
+      thickness,
+      color,
+    });
+
+    prevX = zx;
+    prevY = zy;
+  }
+
+  // final leg back to x2,y2
+  page.drawLine({
+    start: { x: prevX, y: prevY },
+    end: { x: x2, y: y2 },
+    thickness,
+    color,
+  });
+}
+
+// Styled outline for a rectangle
+function drawStyledRectOutline(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  page: any,
+  rx: number,
+  ry: number,
+  rw: number,
+  rh: number,
+  style: OutlineStyle,
+  thickness: number,
+  color: ReturnType<typeof rgb>
+) {
+  const x1 = rx;
+  const y1 = ry;
+  const x2 = rx + rw;
+  const y2 = ry + rh;
+
+  const edges: [number, number, number, number][] = [
+    [x1, y1, x2, y1], // bottom
+    [x2, y1, x2, y2], // right
+    [x2, y2, x1, y2], // top
+    [x1, y2, x1, y1], // left
+  ];
+
+  if (style === "solid") {
+    page.drawRectangle({
+      x: rx,
+      y: ry,
+      width: rw,
+      height: rh,
+      borderColor: color,
+      borderWidth: thickness,
+      color: undefined,
+    });
+    return;
+  }
+
+  for (const [sx, sy, ex, ey] of edges) {
+    if (style === "dashed") {
+      drawDashedLineOnPage(page, sx, sy, ex, ey, thickness, color);
+    } else if (style === "cloud") {
+      drawCloudLineOnPage(page, sx, sy, ex, ey, thickness, color);
+    } else if (style === "zigzag") {
+      drawZigzagLineOnPage(page, sx, sy, ex, ey, thickness, color);
+    }
+  }
+}
+
+// Styled outline for a triangle
+function drawStyledTriangleOutline(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  page: any,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  x3: number,
+  y3: number,
+  style: OutlineStyle,
+  thickness: number,
+  color: ReturnType<typeof rgb>
+) {
+  const edges: [number, number, number, number][] = [
+    [x1, y1, x2, y2],
+    [x2, y2, x3, y3],
+    [x3, y3, x1, y1],
+  ];
+
+  if (style === "solid") {
+    const path = `M ${x1} ${y1} L ${x2} ${y2} L ${x3} ${y3} Z`;
+    page.drawSvgPath(path, {
+      borderColor: color,
+      borderWidth: thickness,
+      color: undefined,
+    });
+    return;
+  }
+
+  for (const [sx, sy, ex, ey] of edges) {
+    if (style === "dashed") {
+      drawDashedLineOnPage(page, sx, sy, ex, ey, thickness, color);
+    } else if (style === "cloud") {
+      drawCloudLineOnPage(page, sx, sy, ex, ey, thickness, color);
+    } else if (style === "zigzag") {
+      drawZigzagLineOnPage(page, sx, sy, ex, ey, thickness, color);
+    }
+  }
+}
+
+// Styled outline for a circle
+function drawStyledCircleOutline(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  page: any,
+  cx: number,
+  cy: number,
+  r: number,
+  style: OutlineStyle,
+  thickness: number,
+  color: ReturnType<typeof rgb>
+) {
+  if (style === "solid") {
+    page.drawCircle({
+      x: cx,
+      y: cy,
+      size: r,
+      borderColor: color,
+      borderWidth: thickness,
+      color: undefined,
+    });
+    return;
+  }
+
+  if (style === "dashed" || style === "zigzag") {
+    const dashLen = 6 * thickness;
+    const gapLen = 4 * thickness;
+    const step = (dashLen + gapLen) / r; // angle step
+
+    for (let angle = 0; angle < 2 * Math.PI; angle += step) {
+      const a1 = angle;
+      const a2 = Math.min(angle + dashLen / r, a1 + step);
+
+      const x1 = cx + r * Math.cos(a1);
+      const y1 = cy + r * Math.sin(a1);
+      const x2 = cx + r * Math.cos(a2);
+      const y2 = cy + r * Math.sin(a2);
+
+      if (style === "dashed") {
+        drawDashedLineOnPage(page, x1, y1, x2, y2, thickness, color);
+      } else {
+        drawZigzagLineOnPage(page, x1, y1, x2, y2, thickness, color);
+      }
+    }
+    return;
+  }
+
+  if (style === "cloud") {
+    const bumps = Math.max(10, Math.round((2 * Math.PI * r) / (2.5 * thickness)));
+    const radius = 1.2 * thickness;
+
+    for (let i = 0; i < bumps; i++) {
+      const t = (i / bumps) * 2 * Math.PI;
+      const bx = cx + r * Math.cos(t);
+      const by = cy + r * Math.sin(t);
+
+      page.drawCircle({
+        x: bx,
+        y: by,
+        size: radius,
+        color,
+        opacity: 1,
+      });
+    }
+  }
+}
+
+
   const downloadPdfWithMarkups = async (options?: { flatten?: boolean }) => {
   const flatten = options?.flatten ?? false;
   if (!pdfDoc) {
@@ -586,172 +878,376 @@ useEffect(() => {
   }
 
   try {
-    // 🔹 Get the exact bytes pdf.js is rendering
-    const rawBytes = await pdfDoc.getData();          // Uint8Array
+    const rawBytes = await pdfDoc.getData(); // Uint8Array
     const pdfLibDoc = await PDFDocument.load(rawBytes);
 
     const pages = pdfLibDoc.getPages();
-    const font = await pdfLibDoc.embedFont(StandardFonts.Helvetica);
+
+    // 🔹 Embed font family for text styles
+    const fontRegular = await pdfLibDoc.embedFont(StandardFonts.Helvetica);
+    const fontBold = await pdfLibDoc.embedFont(StandardFonts.HelveticaBold);
+    const fontOblique = await pdfLibDoc.embedFont(StandardFonts.HelveticaOblique);
+    const fontBoldOblique = await pdfLibDoc.embedFont(
+      StandardFonts.HelveticaBoldOblique
+    );
 
     if (flatten) {
+      // ======================================================
+      //   FLATTEN MODE: draw EVERYTHING into the page content
+      //   (no MDR metadata; not editable on re-import)
+      // ======================================================
+      pages.forEach((page, index) => {
+        const pageNumber = index + 1;
+        const { width, height } = page.getSize();
 
-    // ---- draw markups on each page ----
-    pages.forEach((page, index) => {
-      const pageNumber = index + 1;
-      const { width, height } = page.getSize();
+// ---------- LINES ----------
+const linesOnPage = lines.filter((l) => l.page === pageNumber);
+for (const line of linesOnPage) {
+  const [r, g, b] = hexToRgb01(line.color);
+  const color = rgb(r, g, b);
 
-      // LINES
-      const linesOnPage = lines.filter((l) => l.page === pageNumber);
-      for (const line of linesOnPage) {
-        const [r, g, b] = hexToRgb01(line.color);
-        const x1 = line.x1 * width;
-        const y1 = height - line.y1 * height;
-        const x2 = line.x2 * width;
-        const y2 = height - line.y2 * height;
+  const x1 = line.x1 * width;
+  const y1 = height - line.y1 * height;
+  const x2 = line.x2 * width;
+  const y2 = height - line.y2 * height;
 
-        const dash =
-          line.style === "dashed"
-            ? [4 * line.thickness, 2 * line.thickness]
-            : line.style === "dotted"
-            ? [line.thickness, 2 * line.thickness]
-            : line.style === "dotdash"
-            ? [
-                line.thickness,
-                1.5 * line.thickness,
-                4 * line.thickness,
-                1.5 * line.thickness,
-              ]
-            : undefined;
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const length = Math.hypot(dx, dy) || 1;
+  const ux = dx / length;
+  const uy = dy / length;
 
-        page.drawLine({
-          start: { x: x1, y: y1 },
-          end: { x: x2, y: y2 },
-          thickness: line.thickness,
-          color: rgb(r, g, b),
-          dashArray: dash,
-        });
-        // (still ignoring wavy + arrowEnd in flattened export)
-      }
+  // --- main stroke ---
+  if (line.style === "wavy") {
+    // smooth sine-ish wave along the segment
+    const px = -uy; // normal
+    const py = ux;
 
-      // AREAS
-      const areasOnPage = areas.filter((a) => a.page === pageNumber);
-      for (const area of areasOnPage) {
-  const [r, g, b] = hexToRgb01(area.color);
-  const strokeColor = rgb(r, g, b);
-  const fillColor = rgb(r, g, b);
+    const segments = Math.max(32, Math.round(length / (2 * line.thickness)));
+    const amplitude = 0.6 * line.thickness;
+    const waves = Math.max(2, length / (40 * line.thickness)); // number of waves
 
-  if (area.type === "freeform" && area.points.length > 1) {
-    // (your freeform code is fine)
-  } else if (area.points.length >= 2) {
-    const [p1, p2] = area.points;
-    const x1 = p1.x * width;
-    const y1 = height - p1.y * height;
-    const x2 = p2.x * width;
-    const y2 = height - p2.y * height;
+    let prevX = x1;
+    let prevY = y1;
 
-    if (area.type === "rect") {
-      // ✅ correct rectangle math for pdf-lib (x,y = bottom-left)
-      const rx = Math.min(x1, x2);           // left
-      const ry = Math.min(y1, y2);           // bottom
-      const rw = Math.abs(x2 - x1);
-      const rh = Math.abs(y2 - y1);
+    for (let i = 1; i <= segments; i++) {
+      const tNorm = i / segments;
+      const dist = tNorm * length;
 
-      page.drawRectangle({
-        x: rx,
-        y: ry,                               // ✅ NO ry - rh
-        width: rw,
-        height: rh,
-        borderColor: strokeColor,
-        borderWidth: area.thickness,
-        color: fillColor,
-        opacity: area.fillOpacity,
+      const baseX = x1 + ux * dist;
+      const baseY = y1 + uy * dist;
+
+      const offset =
+        Math.sin(tNorm * waves * Math.PI * 2) * amplitude; // smooth oscillation
+      const offX = baseX + px * offset;
+      const offY = baseY + py * offset;
+
+      page.drawLine({
+        start: { x: prevX, y: prevY },
+        end: { x: offX, y: offY },
+        thickness: line.thickness,
+        color,
+      });
+
+      prevX = offX;
+      prevY = offY;
+    }
+
+    // last leg to exact endpoint
+    page.drawLine({
+      start: { x: prevX, y: prevY },
+      end: { x: x2, y: y2 },
+      thickness: line.thickness,
+      color,
+    });
+  } else {
+    // solid/dashed/dotted/dotdash
+    const dash =
+      line.style === "dashed"
+        ? [4 * line.thickness, 2 * line.thickness]
+        : line.style === "dotted"
+        ? [line.thickness, 2 * line.thickness]
+        : line.style === "dotdash"
+        ? [
+            line.thickness,
+            1.5 * line.thickness,
+            4 * line.thickness,
+            1.5 * line.thickness,
+          ]
+        : undefined;
+
+    page.drawLine({
+      start: { x: x1, y: y1 },
+      end: { x: x2, y: y2 },
+      thickness: line.thickness,
+      color,
+      dashArray: dash,
+    });
+  }
+
+  // --- arrowhead for ANY style ---
+  if (line.arrowEnd) {
+    const arrowSize = 2 * line.thickness+2;
+
+    const backX = x2 - ux * arrowSize;
+    const backY = y2 - uy * arrowSize;
+
+    const px = -uy;
+    const py = ux;
+
+    const leftX = backX + px * (arrowSize * 0.6);
+    const leftY = backY + py * (arrowSize * 0.6);
+    const rightX = backX - px * (arrowSize * 0.6);
+    const rightY = backY - py * (arrowSize * 0.6);
+
+    // two bold strokes to form the arrow; very visible
+    page.drawLine({
+      start: { x: x2, y: y2 },
+      end: { x: leftX, y: leftY },
+      thickness: line.thickness * 0.75,
+      color,
+    });
+    page.drawLine({
+      start: { x: x2, y: y2 },
+      end: { x: rightX, y: rightY },
+      thickness: line.thickness * 0.75,
+      color,
+    });
+  }
+}
+
+
+
+
+            // ---------- AREAS ----------
+    const areasOnPage = areas.filter((a) => a.page === pageNumber);
+    for (const area of areasOnPage) {
+      const [r, g, b] = hexToRgb01(area.color);
+      const strokeColor = rgb(r, g, b);
+      const fillColor = rgb(r, g, b);
+
+      // First, draw fill (if any), then styled outline on top
+
+      if (area.type === "freeform" && area.points.length > 1) {
+        // Freeform polygon
+        const [first, ...rest] = area.points;
+        let d = `M ${first.x * width} ${height - first.y * height}`;
+        for (const p of rest) {
+          const px = p.x * width;
+          const py = height - p.y * height;
+          d += ` L ${px} ${py}`;
+        }
+        d += " Z";
+
+        // Fill
+        if (area.fillOpacity > 0) {
+          page.drawSvgPath(d, {
+            color: fillColor,
+            opacity: area.fillOpacity,
+          });
+        }
+
+        // Outline (approximate as solid – outlineStyle on freeform is trickier;
+        // you can extend later if you want)
+        drawStyledTriangleOutline(
+          page,
+          area.points[0].x * width,
+          height - area.points[0].y * height,
+          area.points[Math.floor(area.points.length / 3)].x * width,
+          height - area.points[Math.floor(area.points.length / 3)].y * height,
+          area.points[Math.floor((2 * area.points.length) / 3)].x * width,
+          height - area.points[Math.floor((2 * area.points.length) / 3)].y * height,
+          "solid",
+          area.thickness,
+          strokeColor
+        );
+      } else if (area.points.length >= 2) {
+        const [p1, p2] = area.points;
+        const x1 = p1.x * width;
+        const y1 = height - p1.y * height;
+        const x2 = p2.x * width;
+        const y2 = height - p2.y * height;
+
+        if (area.type === "rect") {
+          const rx = Math.min(x1, x2);
+          const ry = Math.min(y1, y2);
+          const rw = Math.abs(x2 - x1);
+          const rh = Math.abs(y2 - y1);
+
+          // Fill
+          if (area.fillOpacity > 0) {
+            page.drawRectangle({
+              x: rx,
+              y: ry,
+              width: rw,
+              height: rh,
+              color: fillColor,
+              opacity: area.fillOpacity,
             });
-          } else if (area.type === "circle") {
-            const cx = (x1 + x2) / 2;
-            const cy = (y1 + y2) / 2;
-            const rPx = Math.hypot(x2 - x1, y2 - y1) / 2;
+          }
 
+          // Styled outline
+          drawStyledRectOutline(
+            page,
+            rx,
+            ry,
+            rw,
+            rh,
+            area.outlineStyle,
+            area.thickness,
+            strokeColor
+          );
+        } else if (area.type === "circle") {
+          const cx = (x1 + x2) / 2;
+          const cy = (y1 + y2) / 2;
+          const rPx = Math.hypot(x2 - x1, y2 - y1) / 2;
+
+          // Fill
+          if (area.fillOpacity > 0) {
             page.drawCircle({
               x: cx,
               y: cy,
               size: rPx,
-              borderColor: strokeColor,
-              borderWidth: area.thickness,
               color: fillColor,
               opacity: area.fillOpacity,
             });
-          } else {
-            // triangle
-            const tx1 = x1;
-            const ty1 = y1;
-            const tx2 = x2;
-            const ty2 = y1;
-            const tx3 = x2;
-            const ty3 = y2;
+          }
 
-            const triPath = `M ${tx1} ${ty1} L ${tx2} ${ty2} L ${tx3} ${ty3} Z`;
+          // Styled outline
+          drawStyledCircleOutline(
+            page,
+            cx,
+            cy,
+            rPx,
+            area.outlineStyle,
+            area.thickness,
+            strokeColor
+          );
+        } else {
+          // triangle
+          const tx1 = x1;
+          const ty1 = y1;
+          const tx2 = x2;
+          const ty2 = y1;
+          const tx3 = x2;
+          const ty3 = y2;
 
+          // Fill
+          const triPath = `M ${tx1} ${ty1} L ${tx2} ${ty2} L ${tx3} ${ty3} Z`;
+          if (area.fillOpacity > 0) {
             page.drawSvgPath(triPath, {
-              borderColor: strokeColor,
-              borderWidth: area.thickness,
               color: fillColor,
               opacity: area.fillOpacity,
             });
           }
+
+          // Styled outline
+          drawStyledTriangleOutline(
+            page,
+            tx1,
+            ty1,
+            tx2,
+            ty2,
+            tx3,
+            ty3,
+            area.outlineStyle,
+            area.thickness,
+            strokeColor
+          );
         }
       }
+    }
 
-      // TEXT BOXES
-      const textOnPage = textBoxes.filter((b) => b.page === pageNumber);
-      for (const box of textOnPage) {
-        const [tr, tg, tb] = hexToRgb01(box.textColor);
-        const textColor = rgb(tr, tg, tb);
 
-        const x = box.x * width;
-        const boxHeight = box.height * height;
-        const yTop = height - box.y * height;
+        // ---------- TEXT BOXES ----------
+        const textOnPage = textBoxes.filter((b) => b.page === pageNumber);
+        for (const box of textOnPage) {
+          const [tr, tg, tb] = hexToRgb01(box.textColor);
+          const textColor = rgb(tr, tg, tb);
 
-        if (box.solidBackground) {
-          const [br, bg, bb] = hexToRgb01(box.backgroundColor);
-          page.drawRectangle({
-            x,
-            y: yTop - boxHeight,
-            width: box.width * width,
-            height: boxHeight,
-            color: rgb(br, bg, bb),
-            opacity: 1,
-          });
-        }
+          const x = box.x * width;
+          const boxHeight = box.height * height;
+          const yTop = height - box.y * height;
 
-        const linesText = (box.text || "").split(/\r?\n/);
-        let cursorY = yTop - box.fontSize - 4;
-        const textX = x + 4;
-
-        for (const lineText of linesText) {
-          if (!lineText) {
-            cursorY -= box.fontSize * 1.2;
-            continue;
+          // background rectangle if solid
+          if (box.solidBackground) {
+            const [br, bg, bb] = hexToRgb01(box.backgroundColor);
+            page.drawRectangle({
+              x,
+              y: yTop - boxHeight,
+              width: box.width * width,
+              height: boxHeight,
+              color: rgb(br, bg, bb),
+              opacity: 1,
+            });
           }
-          page.drawText(lineText, {
-            x: textX,
-            y: cursorY,
-            size: box.fontSize,
-            font,
-            color: textColor,
-          });
-          cursorY -= box.fontSize * 1.2;
+
+          const linesText = (box.text || "").split(/\r?\n/);
+
+          // choose font based on bold/italic combination
+          const baseFont =
+            box.bold && box.italic
+              ? fontBoldOblique
+              : box.bold
+              ? fontBold
+              : box.italic
+              ? fontOblique
+              : fontRegular;
+
+          let cursorY = yTop - box.fontSize - 4;
+          const textX = x + 4;
+
+          for (const lineText of linesText) {
+            if (!lineText) {
+              cursorY -= box.fontSize * 1.2;
+              continue;
+            }
+
+            const lineY = cursorY;
+
+            page.drawText(lineText, {
+              x: textX,
+              y: lineY,
+              size: box.fontSize,
+              font: baseFont,
+              color: textColor,
+            });
+
+            // 🔹 Underline
+            if (box.underline) {
+              const textWidth = baseFont.widthOfTextAtSize(
+                lineText,
+                box.fontSize
+              );
+              const underlineY =
+                lineY - Math.max(0.5, box.fontSize / 18); // slightly below baseline
+
+              page.drawLine({
+                start: { x: textX, y: underlineY },
+                end: { x: textX + textWidth, y: underlineY },
+                thickness: Math.max(0.5, box.fontSize / 18),
+                color: textColor,
+              });
+            }
+
+            cursorY -= box.fontSize * 1.2;
+          }
         }
-      }
-    });
-  }
+      });
 
-    // ---- embed editable markups as metadata ----
-    const annotationsPayload = { lines, areas, textBoxes };
-    pdfLibDoc.setSubject("MDR:" + encodeAnnotations(annotationsPayload));
+      // ❌ No MDR metadata in flattened mode
+      pdfLibDoc.setSubject("");
+    } else {
+      // ======================================================
+      //   EDITABLE MODE (non-flatten):
+      //   No drawing; just store structured annotations
+      // ======================================================
+      const annotationsPayload = { lines, areas, textBoxes };
+      pdfLibDoc.setSubject("MDR:" + encodeAnnotations(annotationsPayload));
+    }
 
-    // 2) Save → Uint8Array
-    const outBytes = await pdfLibDoc.save(); // Uint8Array
-
+    // ---- Save + trigger download ----
+    const outBytes = await pdfLibDoc.save();
     const blob = new Blob([outBytes as BlobPart], {
       type: "application/pdf",
     });
@@ -768,6 +1264,9 @@ useEffect(() => {
     alert("Could not generate marked-up PDF.");
   }
 };
+
+
+
 
 
 
@@ -1379,9 +1878,39 @@ const handleFitHeight = () => {
   // ---- hand-tool: panning -----------------------------------
   const handleMouseDown = (e: React.MouseEvent) => {
     const isHand = tool === "hand";
-    const isLine = tool === "line";
-    const isArea = tool === "area";
-    const isText = tool === "text";
+  const isLine = tool === "line";
+  const isArea = tool === "area";
+  const isText = tool === "text";
+
+  // 🔹 NEW: right-click = temporary pan, regardless of current tool
+  if (e.button === 2) {
+    if (!viewerRef.current) return;
+    isPanningRef.current = true;
+    viewerRef.current.style.cursor = "grabbing";
+
+    panStartRef.current = {
+      x: e.clientX,
+      y: e.clientY,
+      scrollLeft: viewerRef.current.scrollLeft,
+      scrollTop: viewerRef.current.scrollTop,
+    };
+    return;
+  }
+
+  // HAND TOOL MODE (left-click panning)
+  if (isHand) {
+    if (!viewerRef.current) return;
+    isPanningRef.current = true;
+    viewerRef.current.style.cursor = "grabbing";
+
+    panStartRef.current = {
+      x: e.clientX,
+      y: e.clientY,
+      scrollLeft: viewerRef.current.scrollLeft,
+      scrollTop: viewerRef.current.scrollTop,
+    };
+    return;
+  }
 
     // HAND TOOL MODE ------------ (pan)
     if (isHand) {
@@ -1519,6 +2048,20 @@ const handleFitHeight = () => {
     const isLine = tool === "line";
     const isArea = tool === "area";
     const isText = tool === "text";
+
+    // 🔹 NEW: if we're panning (either real hand tool or right-click temp),
+  // just update scroll and return
+  if (isPanningRef.current) {
+    if (!viewerRef.current) return;
+    const dx = e.clientX - panStartRef.current.x;
+    const dy = e.clientY - panStartRef.current.y;
+    viewerRef.current.scrollLeft =
+      panStartRef.current.scrollLeft - dx;
+    viewerRef.current.scrollTop =
+      panStartRef.current.scrollTop - dy;
+    return;
+  }
+
 
     // HAND TOOL MODE ------------ (pan)
     if (isHand) {
@@ -1722,33 +2265,34 @@ const handleFitHeight = () => {
     }
   };
 
-  const endPanOrDraw = () => {
-    // stop panning
-    if (tool === "hand") {
-      if (!viewerRef.current) return;
-      isPanningRef.current = false;
-      viewerRef.current.style.cursor = "grab";
-    }
+  
+    const endPanOrDraw = () => {
+  // stop panning (both real hand tool & right-click pan)
+  if (viewerRef.current) {
+    isPanningRef.current = false;
+    viewerRef.current.style.cursor = tool === "hand" ? "grab" : "default";
+  }
 
-    // stop line drawing/drag
-    setIsDrawingLine(false);
-    setCurrentLineId(null);
-    dragModeRef.current = "none";
-    dragLineIdRef.current = null;
-    dragStartRef.current = null;
+  // stop line drawing/drag
+  setIsDrawingLine(false);
+  setCurrentLineId(null);
+  dragModeRef.current = "none";
+  dragLineIdRef.current = null;
+  dragStartRef.current = null;
 
-    // stop area drawing/drag
-    setIsDrawingArea(false);
-    setCurrentAreaId(null);
-    areaDragModeRef.current = "none";
-    areaDragIdRef.current = null;
-    areaDragStartRef.current = null;
+  // stop area drawing/drag
+  setIsDrawingArea(false);
+  setCurrentAreaId(null);
+  areaDragModeRef.current = "none";
+  areaDragIdRef.current = null;
+  areaDragStartRef.current = null;
 
-    // stop text drag
-    textDragModeRef.current = "none";
-    textDragIdRef.current = null;
-    textDragStartRef.current = null;
-  };
+  // stop text drag
+  textDragModeRef.current = "none";
+  textDragIdRef.current = null;
+  textDragStartRef.current = null;
+};
+
 
   // ---- hand-tool: wheel zoom --------------------------------
     const handleWheel = (e: React.WheelEvent) => {
@@ -1764,7 +2308,7 @@ const handleFitHeight = () => {
 
   // ---- selection / drag helpers for lines -------------------
   const startLineMove = (e: React.MouseEvent, lineId: number) => {
-    if ((tool !== "line" && tool !== "select") || !canvasRef.current) return;
+    if ((tool !== "line" && tool !== "select" && e.button !== 0) || !canvasRef.current) return;
     e.stopPropagation();
     e.preventDefault();
 
@@ -1795,7 +2339,7 @@ const handleFitHeight = () => {
     lineId: number,
     endpoint: "start" | "end"
   ) => {
-    if ((tool !== "line" && tool !== "select") || !canvasRef.current) return;
+    if ((tool !== "line" && tool !== "select" && e.button !== 0) || !canvasRef.current) return;
     e.stopPropagation();
     e.preventDefault();
 
@@ -1823,7 +2367,7 @@ const handleFitHeight = () => {
 
   // ---- selection / drag helpers for areas -------------------
   const startAreaMove = (e: React.MouseEvent, areaId: number) => {
-    if ((tool !== "area" && tool !== "select") || !canvasRef.current) return;
+    if ((tool !== "area" && tool !== "select" && e.button !== 0) || !canvasRef.current) return;
     e.stopPropagation();
     e.preventDefault();
 
@@ -1851,7 +2395,7 @@ const handleFitHeight = () => {
     areaId: number,
     endpoint: "start" | "end"
   ) => {
-    if ((tool !== "area" && tool !== "select") || !canvasRef.current) return;
+    if ((tool !== "area" && tool !== "select" && e.button !== 0) || !canvasRef.current) return;
     e.stopPropagation();
     e.preventDefault();
 
@@ -2511,6 +3055,7 @@ const handleFitHeight = () => {
           onMouseUp={endPanOrDraw}
           onMouseLeave={endPanOrDraw}
           onWheel={handleWheel}
+          onContextMenu={(e) => e.preventDefault()} // 🔹 disable browser context menu
         >
           {pdfDoc ? (
             
@@ -3000,7 +3545,7 @@ const handleFitHeight = () => {
                         }}
                         onMouseDown={(e) => {
                           e.stopPropagation();
-                          if (tool !== "text" && tool !== "select") return;
+                          if (tool !== "text" && tool !== "select" && e.button !== 0) return;
 
                           setSelectedTextId(box.id);
                           setSelectedLineId(null);
@@ -3078,7 +3623,7 @@ const handleFitHeight = () => {
                         <div
                           onMouseDown={(e) => {
                             e.stopPropagation();
-                            if (tool !== "text" && tool !== "select") return;
+                            if (tool !== "text" && tool !== "select" && e.button !== 0) return;
 
                             setSelectedTextId(box.id);
                             setSelectedLineId(null);

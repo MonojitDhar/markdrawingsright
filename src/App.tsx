@@ -379,8 +379,10 @@ const App: React.FC = () => {
     textBoxes,
   });
 
-  const [originalPdfBytes, setOriginalPdfBytes] = useState<Uint8Array | null>(null);
+  const [flattenOnDownload, setFlattenOnDownload] = useState(false);
 
+
+  
 
   
   useEffect(() => {
@@ -576,26 +578,29 @@ useEffect(() => {
     }
   };
 
-  const downloadPdfWithMarkups = async () => {
-  // Use the actual File object as the source of truth
-  if (!pdfFile) {
+  const downloadPdfWithMarkups = async (options?: { flatten?: boolean }) => {
+  const flatten = options?.flatten ?? false;
+  if (!pdfDoc) {
     alert("No original PDF loaded.");
     return;
   }
 
   try {
-    // 1) Read the file bytes fresh
-    const arrayBuffer = await pdfFile.arrayBuffer();
-    const pdfLibDoc = await PDFDocument.load(arrayBuffer);
+    // 🔹 Get the exact bytes pdf.js is rendering
+    const rawBytes = await pdfDoc.getData();          // Uint8Array
+    const pdfLibDoc = await PDFDocument.load(rawBytes);
 
     const pages = pdfLibDoc.getPages();
     const font = await pdfLibDoc.embedFont(StandardFonts.Helvetica);
 
+    if (flatten) {
+
+    // ---- draw markups on each page ----
     pages.forEach((page, index) => {
       const pageNumber = index + 1;
       const { width, height } = page.getSize();
 
-      // ---- LINES ----
+      // LINES
       const linesOnPage = lines.filter((l) => l.page === pageNumber);
       for (const line of linesOnPage) {
         const [r, g, b] = hexToRgb01(line.color);
@@ -610,7 +615,12 @@ useEffect(() => {
             : line.style === "dotted"
             ? [line.thickness, 2 * line.thickness]
             : line.style === "dotdash"
-            ? [line.thickness, 1.5 * line.thickness, 4 * line.thickness, 1.5 * line.thickness]
+            ? [
+                line.thickness,
+                1.5 * line.thickness,
+                4 * line.thickness,
+                1.5 * line.thickness,
+              ]
             : undefined;
 
         page.drawLine({
@@ -620,53 +630,41 @@ useEffect(() => {
           color: rgb(r, g, b),
           dashArray: dash,
         });
+        // (still ignoring wavy + arrowEnd in flattened export)
       }
 
-      // ---- AREAS ----
+      // AREAS
       const areasOnPage = areas.filter((a) => a.page === pageNumber);
       for (const area of areasOnPage) {
-        const [r, g, b] = hexToRgb01(area.color);
-        const strokeColor = rgb(r, g, b);
-        const fillColor = rgb(r, g, b);
+  const [r, g, b] = hexToRgb01(area.color);
+  const strokeColor = rgb(r, g, b);
+  const fillColor = rgb(r, g, b);
 
-        if (area.type === "freeform" && area.points.length > 1) {
-          const pts = area.points.map((p) => ({
-            x: p.x * width,
-            y: height - p.y * height,
-          }));
-          const path =
-            pts
-              .map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`)
-              .join(" ") + " Z";
+  if (area.type === "freeform" && area.points.length > 1) {
+    // (your freeform code is fine)
+  } else if (area.points.length >= 2) {
+    const [p1, p2] = area.points;
+    const x1 = p1.x * width;
+    const y1 = height - p1.y * height;
+    const x2 = p2.x * width;
+    const y2 = height - p2.y * height;
 
-          page.drawSvgPath(path, {
-            borderColor: strokeColor,
-            borderWidth: area.thickness,
-            color: fillColor,
-            opacity: area.fillOpacity,
-          });
-        } else if (area.points.length >= 2) {
-          const [p1, p2] = area.points;
-          const x1 = p1.x * width;
-          const y1 = height - p1.y * height;
-          const x2 = p2.x * width;
-          const y2 = height - p2.y * height;
+    if (area.type === "rect") {
+      // ✅ correct rectangle math for pdf-lib (x,y = bottom-left)
+      const rx = Math.min(x1, x2);           // left
+      const ry = Math.min(y1, y2);           // bottom
+      const rw = Math.abs(x2 - x1);
+      const rh = Math.abs(y2 - y1);
 
-          if (area.type === "rect") {
-            const rx = Math.min(x1, x2);
-            const ry = Math.min(y1, y2);
-            const rw = Math.abs(x2 - x1);
-            const rh = Math.abs(y2 - y1);
-
-            page.drawRectangle({
-              x: rx,
-              y: ry - rh,
-              width: rw,
-              height: rh,
-              borderColor: strokeColor,
-              borderWidth: area.thickness,
-              color: fillColor,
-              opacity: area.fillOpacity,
+      page.drawRectangle({
+        x: rx,
+        y: ry,                               // ✅ NO ry - rh
+        width: rw,
+        height: rh,
+        borderColor: strokeColor,
+        borderWidth: area.thickness,
+        color: fillColor,
+        opacity: area.fillOpacity,
             });
           } else if (area.type === "circle") {
             const cx = (x1 + x2) / 2;
@@ -692,6 +690,7 @@ useEffect(() => {
             const ty3 = y2;
 
             const triPath = `M ${tx1} ${ty1} L ${tx2} ${ty2} L ${tx3} ${ty3} Z`;
+
             page.drawSvgPath(triPath, {
               borderColor: strokeColor,
               borderWidth: area.thickness,
@@ -702,7 +701,7 @@ useEffect(() => {
         }
       }
 
-      // ---- TEXT BOXES ----
+      // TEXT BOXES
       const textOnPage = textBoxes.filter((b) => b.page === pageNumber);
       for (const box of textOnPage) {
         const [tr, tg, tb] = hexToRgb01(box.textColor);
@@ -744,19 +743,18 @@ useEffect(() => {
         }
       }
     });
+  }
 
-    // 2) embed annotations into Subject
+    // ---- embed editable markups as metadata ----
     const annotationsPayload = { lines, areas, textBoxes };
     pdfLibDoc.setSubject("MDR:" + encodeAnnotations(annotationsPayload));
 
-    // 3) save & download
-    const outBytes = await pdfLibDoc.save();
+    // 2) Save → Uint8Array
+    const outBytes = await pdfLibDoc.save(); // Uint8Array
 
-    // TS hack: treat outBytes as BlobPart, but at runtime this is just the same Uint8Array
-    const blob = new Blob([outBytes as unknown as BlobPart], {
+    const blob = new Blob([outBytes as BlobPart], {
       type: "application/pdf",
     });
-
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -770,6 +768,7 @@ useEffect(() => {
     alert("Could not generate marked-up PDF.");
   }
 };
+
 
 
 
@@ -863,9 +862,6 @@ useEffect(() => {
   }
 };
 
-
-// Keep raw PDF bytes around so we can re-write them
-const [pdfRawBytes, setPdfRawBytes] = useState<Uint8Array | null>(null);
 
 // Hex → pdf-lib rgb (0–1)
 function hexToRgb01(hex: string): [number, number, number] {
@@ -969,11 +965,8 @@ const openPdfFromArrayBuffer = async (
   const buffer = new Uint8Array(arrayBuffer);
 
   // keep raw bytes for export later
-  setOriginalPdfBytes(buffer);
-  setPdfRawBytes(buffer);
-
-  console.log(originalPdfBytes, originalPdfBytes?.constructor.name);
-
+  
+  
 
   // compute a stable id for this PDF & remember its name
   const docId = await computeDocId(arrayBuffer);
@@ -1968,8 +1961,8 @@ const handleFitHeight = () => {
           </button>
 
           <button
-    onClick={() => void downloadPdfWithMarkups()}
-    disabled={!pdfDoc}
+    onClick={() => void downloadPdfWithMarkups({ flatten: flattenOnDownload })}
+  disabled={!pdfDoc}
     style={{
       padding: "6px 10px",
       borderRadius: 6,
@@ -1983,6 +1976,24 @@ const handleFitHeight = () => {
   >
     Download PDF + Markups
   </button>
+
+  <label
+  style={{
+    display: "flex",
+    alignItems: "center",
+    gap: 4,
+    fontSize: 12,
+    color: "#e5e7eb",
+  }}
+>
+  <input
+    type="checkbox"
+    checked={flattenOnDownload}
+    onChange={(e) => setFlattenOnDownload(e.target.checked)}
+  />
+  Flatten marks into PDF
+</label>
+
         </div>
 
       </div>
